@@ -21,7 +21,7 @@ sbatch <<EOT
 module load CUDA
 
 #BUILD
-make PARAMETER_N=${N} PARAMETER_THREADS=${THREADS} PARAMETER_N_STEPS=${N_STEPS}
+make N=${N} THREADS=${THREADS} N_STEPS=${N_STEPS}
 
 #RUN
 srun ./lj.out
