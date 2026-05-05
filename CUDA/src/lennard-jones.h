@@ -59,9 +59,10 @@ double compute_forces(
 double leapfrog_step(
     Particle *particles,
     unsigned int n,
-    double box_size
+    double box_size,
+    int threads
 );
-SimulationResult run_simulation(Particle *particles, unsigned int n, unsigned int nsteps, double box_size, int log_steps);
+SimulationResult run_simulation(Particle *particles, unsigned int n, unsigned int nsteps, double box_size, int log_steps, int threads);
 
 #ifdef __cplusplus
 }
