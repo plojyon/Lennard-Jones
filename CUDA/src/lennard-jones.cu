@@ -153,9 +153,18 @@ double compute_v_shift(void)
     return 4.0 * EPSILON * (pow(SIGMA / R_CUT, 12.0) - pow(SIGMA / R_CUT, 6.0));
 }
 
-double v_shift = compute_v_shift();
-double pe = 0.0;
-
+__device__ double v_shift;
+__device__ double atomicAddPreSM60(double* address, double val)
+{
+    unsigned long long int* address_as_ull = (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+    do {
+        assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+                __double_as_longlong(val + __longlong_as_double(assumed)));
+    } while (assumed != old);
+    return __longlong_as_double(old);
+}
 __global__ void compute_forces_internal(Particle *particles, unsigned int n, double box_size, double *pe_out)
 {
     extern __shared__ double shared[];
@@ -181,8 +190,8 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
         // load tile into shared memory
         if (shared_j < n)
         {
-            sx[threadIdx.x] = particles[shared_j].x;
-            sy[threadIdx.x] = particles[shared_j].y;
+            sh_x[threadIdx.x] = particles[shared_j].x;
+            sh_y[threadIdx.x] = particles[shared_j].y;
         }
 
         __syncthreads();
@@ -195,11 +204,10 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
             {
                 continue;
             }
-            Particle *pj = &particles[j];
 
             // compute distance between particles with periodic boundary conditions
-            double dx = pi->x - sx[k];
-            double dy = pi->y - sy[k];
+            double dx = pi->x - sh_x[k];
+            double dy = pi->y - sh_y[k];
 
             dx -= box_size * nearbyint(dx / box_size);
             dy -= box_size * nearbyint(dy / box_size);
@@ -227,21 +235,51 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
     pi->fx = fxi;
     pi->fy = fyi;
 
-    atomicAdd(pe_out, pe);
+    atomicAddPreSM60(pe_out, pe); // replace with atomicAdd if compute capability > 6.0
 }
 
 double compute_forces(Particle *particles, unsigned int n, double box_size)
 {
-
-    // TODO: Move data (pe, particles) to CUDA
-
-    int threads = 256; // or 256 depending on GPU
+    int threads = 256;
     int blocks = (n + threads - 1) / threads;
     size_t shared_mem_size = 2 * threads * sizeof(double);
 
+    // Device pointers
+    Particle *d_particles;
+    double *d_pe;
+
+    // Allocate GPU memory
+    cudaMalloc((void**)&d_particles, n * sizeof(Particle));
+    cudaMalloc((void**)&d_pe, sizeof(double));
+
+    // Copy particles to GPU
+    cudaMemcpy(d_particles, particles, n * sizeof(Particle), cudaMemcpyHostToDevice);
+
+    // Initialize potential energy on device
     double pe = 0.0;
-    compute_forces_internal<<<blocks, threads, shared_mem_size>>>(particles, n, box_size, &pe);
+    cudaMemcpy(d_pe, &pe, sizeof(double), cudaMemcpyHostToDevice);
+
+    // Copy constant
+    double cpu_v_shift = compute_v_shift();
+    cudaMemcpyToSymbol(v_shift, &cpu_v_shift, sizeof(double));
+
+    // Launch kernel
+    compute_forces_internal<<<blocks, threads, shared_mem_size>>>(
+        d_particles, n, box_size, d_pe
+    );
+
     cudaDeviceSynchronize();
+
+    // Copy result back
+    cudaMemcpy(&pe, d_pe, sizeof(double), cudaMemcpyDeviceToHost);
+
+    // Copy particles back if kernel modifies them
+    cudaMemcpy(particles, d_particles, n * sizeof(Particle), cudaMemcpyDeviceToHost);
+
+    // Free GPU memory
+    cudaFree(d_particles);
+    cudaFree(d_pe);
+
     return pe;
 }
 
