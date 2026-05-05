@@ -267,8 +267,8 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
             double sr = SIGMA * SIGMA / r;
 
             double fij = 24.0 * EPSILON * (2.0 * pow(sr, 6.0) - pow(sr, 3.0)) / r;
-            double fx = fij * dx / r;
-            double fy = fij * dy / r;
+            double fx = fij * dx;
+            double fy = fij * dy;
 
             fxi += fx;
             fyi += fy;
