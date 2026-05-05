@@ -262,21 +262,21 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
                 dy -= box_size * nearbyint(dy / box_size);
 
                 // compute Lennard-Jones force and potential energy contribution if particles are within the cutoff distance
-                double r = sqrt(dx * dx + dy * dy);
-                if (r >= R_CUT || r == 0.0)
+                double r = dx * dx + dy * dy;
+                if (r >= R_CUT * R_CUT || r == 0.0)
                 {
                     continue;
                 }
-                double sr = SIGMA / r;
+                double sr = SIGMA * SIGMA / r;
 
-                double fij = 24.0 * EPSILON * (2.0 * pow(sr, 12.0) - pow(sr, 6.0)) / r;
-                double fx = fij * dx / r;
-                double fy = fij * dy / r;
+                double fij = 24.0 * EPSILON * (2.0 * pow(sr, 6.0) - pow(sr, 3.0)) / r;
+                double fx = fij * dx;
+                double fy = fij * dy;
 
                 fxi += fx;
                 fyi += fy;
 
-                double vij = 4.0 * EPSILON * (pow(sr, 12.0) - pow(sr, 6.0)) - v_shift;
+                double vij = 4.0 * EPSILON * (pow(sr, 6.0) - pow(sr, 3.0)) - v_shift;
                 pe += 0.5 * vij;
             }
         }
@@ -357,12 +357,9 @@ double leapfrog_step(Particle *d_particles, unsigned int n, double box_size, int
     // update velocities by half a time step, then update positions by a full time step,
     // and finally update velocities by another half time step to complete the leapfrog integration step
     half_leapfrog<<<blocks, threads>>>(d_particles, n, 1);
-    cudaDeviceSynchronize();
     wrap_positions_kernel<<<blocks, threads>>>(d_particles, n, box_size);
-    cudaDeviceSynchronize();
     double pe = compute_forces(d_particles, n, box_size, threads);
     half_leapfrog<<<blocks, threads>>>(d_particles, n, 0);
-    cudaDeviceSynchronize();
 
     return pe;
 }
