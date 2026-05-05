@@ -9,7 +9,7 @@
 
 #include "gifenc.h"
 #include "lennard-jones.h"
-#define THREADS 256
+#define THREADS PARAMETER_THREADS
 
 // plotting functions
 #if GENERATE_GIF
