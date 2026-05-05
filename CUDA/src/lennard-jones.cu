@@ -211,14 +211,21 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
     double *sh_x = shared + blockDim.x;
     double *sh_y = shared + blockDim.x * 2;
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n)
-        return;
+    bool active = i < n;
 
     double fxi = 0.0;
     double fyi = 0.0;
 
-    Particle *pi = &particles[i];
+    Particle *pi = active ? &particles[i] : NULL;
     double pe = 0.0;
+    double pix = 0.0;
+    double piy = 0.0;
+
+    if (active)
+    {
+        pix = pi->x;
+        piy = pi->y;
+    }
 
     for (int tile = 0; tile < n; tile += blockDim.x)
     {
@@ -236,46 +243,52 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
 
         __syncthreads();
 
-        int tile_size = min(blockDim.x, n - tile);
-        for (int k = 0; k < tile_size; k++)
+        if (active)
         {
-            int j = tile + k;
-            if (j == i)
+            int tile_size = min(blockDim.x, n - tile);
+            for (int k = 0; k < tile_size; k++)
             {
-                continue;
+                int j = tile + k;
+                if (j == i)
+                {
+                    continue;
+                }
+
+                // compute distance between particles with periodic boundary conditions
+                double dx = pix - sh_x[k];
+                double dy = piy - sh_y[k];
+
+                dx -= box_size * nearbyint(dx / box_size);
+                dy -= box_size * nearbyint(dy / box_size);
+
+                // compute Lennard-Jones force and potential energy contribution if particles are within the cutoff distance
+                double r = sqrt(dx * dx + dy * dy);
+                if (r >= R_CUT || r == 0.0)
+                {
+                    continue;
+                }
+                double sr = SIGMA / r;
+
+                double fij = 24.0 * EPSILON * (2.0 * pow(sr, 12.0) - pow(sr, 6.0)) / r;
+                double fx = fij * dx / r;
+                double fy = fij * dy / r;
+
+                fxi += fx;
+                fyi += fy;
+
+                double vij = 4.0 * EPSILON * (pow(sr, 12.0) - pow(sr, 6.0)) - v_shift;
+                pe += 0.5 * vij;
             }
-
-            // compute distance between particles with periodic boundary conditions
-            double dx = pi->x - sh_x[k];
-            double dy = pi->y - sh_y[k];
-
-            dx -= box_size * nearbyint(dx / box_size);
-            dy -= box_size * nearbyint(dy / box_size);
-
-            // compute Lennard-Jones force and potential energy contribution if particles are within the cutoff distance
-            double r = sqrt(dx * dx + dy * dy);
-            if (r >= R_CUT || r == 0.0)
-            {
-                continue;
-            }
-            double sr = SIGMA / r;
-
-            double fij = 24.0 * EPSILON * (2.0 * pow(sr, 12.0) - pow(sr, 6.0)) / r;
-            double fx = fij * dx / r;
-            double fy = fij * dy / r;
-
-            fxi += fx;
-            fyi += fy;
-
-            double vij = 4.0 * EPSILON * (pow(sr, 12.0) - pow(sr, 6.0)) - v_shift;
-            pe += 0.5 * vij;
         }
 
         __syncthreads();
     }
 
-    pi->fx = fxi;
-    pi->fy = fyi;
+    if (active)
+    {
+        pi->fx = fxi;
+        pi->fy = fyi;
+    }
 
     // Reduce per block
     reduce[threadIdx.x] = pe;
