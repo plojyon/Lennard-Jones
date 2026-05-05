@@ -54,7 +54,8 @@ double compute_v_shift(void);
 double compute_forces(
     Particle *particles,
     unsigned int n,
-    double box_size
+    double box_size,
+    int threads
 );
 double leapfrog_step(
     Particle *particles,

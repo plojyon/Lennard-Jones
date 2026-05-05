@@ -3,7 +3,7 @@
 SIZES=(1000 2000 4000 8000)
 THREADS_LIST=(1 64 256 4096 8192)
 RUNS=5
-N_STEPS=10
+N_STEPS=5000
 
 for threads in "${THREADS_LIST[@]}"; do
     for N in "${SIZES[@]}"; do

@@ -71,7 +71,7 @@ double random_double(void)
 // from dotprod4.cu
 __global__ void compute_ke_kernel(const Particle *d_particles, unsigned int n, double *result)
 {
-    __shared__ double part[];
+    extern __shared__ double part[];
     part[threadIdx.x] = 0.0;
 
     // Each thread sums some partial values to produce a THREADS sized array of partial sums
@@ -350,7 +350,7 @@ double leapfrog_step(Particle *d_particles, unsigned int n, double box_size, int
     // and finally update velocities by another half time step to complete the leapfrog integration step
     half_leapfrog<<<blocks, threads>>>(d_particles, n, 1);
     wrap_positions_kernel<<<blocks, threads>>>(d_particles, n, box_size);
-    double pe = compute_forces(d_particles, n, box_size);
+    double pe = compute_forces(d_particles, n, box_size, threads);
     half_leapfrog<<<blocks, threads>>>(d_particles, n, 0);
 
     return pe;
