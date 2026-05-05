@@ -221,6 +221,10 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
 
     for (int tile = 0; tile < n; tile += blockDim.x)
     {
+        // We care about the details
+        if (tile != 0) 
+            __syncthreads();
+
         int shared_j = tile + threadIdx.x;
 
         sh_x[threadIdx.x] = 0.0;
@@ -274,7 +278,22 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
     pi->fx = fxi;
     pi->fy = fyi;
 
+    // Reduce per block
+    shared[threadIdx.x] = pe;
+
+    __syncthreads();
+
+    for(int idxStep = blockDim.x/2; idxStep > 0; idxStep /= 2)
+    {
+        if(threadIdx.x < idxStep) {
+            shared[threadIdx.x] += shared[threadIdx.x + idxStep];
+        }
+        __syncthreads();
+    }
+
+    if(threadIdx.x == 0) {
     atomicAdd(pe_out, pe); // replace with atomicAdd if compute capability > 6.0
+    }
 }
 
 double compute_forces(Particle *d_particles, unsigned int n, double box_size)
