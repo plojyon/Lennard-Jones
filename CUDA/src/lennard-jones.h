@@ -49,7 +49,6 @@ int initialize_particles(
     unsigned int seed,
     double temperature
 );
-void wrap_positions(Particle *particles, unsigned int n, double box_size);
 
 double compute_v_shift(void);
 double compute_forces(

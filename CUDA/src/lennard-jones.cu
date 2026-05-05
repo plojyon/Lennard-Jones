@@ -9,6 +9,7 @@
 
 #include "gifenc.h"
 #include "lennard-jones.h"
+#define THREADS 256
 
 // plotting functions
 #if GENERATE_GIF
@@ -56,15 +57,64 @@ double random_double(void)
     return (double)rand() / (double)RAND_MAX;
 }
 
-// compute kinetic energy of the system
-double compute_ke(const Particle *particles, unsigned int n)
+// __device__ double atomicAddPreSM60(double* address, double val)
+// {
+//     unsigned long long int* address_as_ull = (unsigned long long int*)address;
+//     unsigned long long int old = *address_as_ull, assumed;
+//     do {
+//         assumed = old;
+//         old = atomicCAS(address_as_ull, assumed,
+//                 __double_as_longlong(val + __longlong_as_double(assumed)));
+//     } while (assumed != old);
+//     return __longlong_as_double(old);
+// }
+
+// from dotprod4.cu
+__global__ void compute_ke_kernel(const Particle *d_particles, unsigned int n, double *result)
 {
-    double ke = 0.0;
-    for (unsigned int i = 0; i < n; ++i)
-    {
-        const Particle *p = &particles[i];
-        ke += 0.5 * (p->vx * p->vx + p->vy * p->vy);
+    __shared__ double part[THREADS];
+    part[threadIdx.x] = 0.0;
+
+    // Each thread sums some partial values to produce a THREADS sized array of partial sums
+    int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    while(tid < n) {
+        const Particle *p = &d_particles[tid];
+        part[threadIdx.x] += 0.5 * (p->vx * p->vx + p->vy * p->vy);
+        tid += blockDim.x * gridDim.x;
     }
+
+    __syncthreads();
+
+    // On each step reduce the partial sum array by half by assigning each thread to sum two values
+    int idxStep;
+    for(idxStep = blockDim.x/2; idxStep > 0; idxStep /= 2)
+    {
+        if(threadIdx.x < idxStep) {
+            part[threadIdx.x] += part[threadIdx.x + idxStep];
+        }
+        __syncthreads();
+    }
+
+    // The last thread has to add the result to result (this is a block result in a grid of blocks)
+    if(threadIdx.x == 0) {
+        atomicAdd(result, part[0]);
+    }
+}
+
+double compute_ke(const Particle *d_particles, unsigned int n)
+{
+    double *d_ke;
+    double ke = 0.0;
+
+    cudaMalloc(&d_ke, sizeof(double));
+    cudaMemset(d_ke, 0, sizeof(double));
+
+    int blocks = (n + THREADS - 1) / THREADS;
+    compute_ke_kernel<<<blocks, THREADS>>>(d_particles, n, d_ke);
+    cudaMemcpy(&ke, d_ke, sizeof(double), cudaMemcpyDeviceToHost);
+
+    cudaFree(d_ke);
+
     return ke;
 }
 
@@ -125,28 +175,25 @@ int initialize_particles(Particle *particles, unsigned int n, double box_size, d
 }
 
 // apply periodic boundary conditions to ensure particles stay within the simulation box
-void wrap_positions(Particle *particles, unsigned int n, double box_size)
+__global__ void wrap_positions_kernel(Particle *particles, unsigned int n, double box_size)
 {
-    for (unsigned int i = 0; i < n; ++i)
-    {
-        Particle *p = &particles[i];
-        double wx = fmod(p->x, box_size);
-        double wy = fmod(p->y, box_size);
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
 
-        if (wx < 0.0)
-        {
-            wx += box_size;
-        }
-        if (wy < 0.0)
-        {
-            wy += box_size;
-        }
+    Particle *p = &particles[i];
 
-        p->x = wx;
-        p->y = wy;
-    }
+    double wx = fmod(p->x, box_size);
+    double wy = fmod(p->y, box_size);
+
+    if (wx < 0.0)
+        wx += box_size;
+
+    if (wy < 0.0)
+        wy += box_size;
+
+    p->x = wx;
+    p->y = wy;
 }
-
 // shift potential to ensure it goes to zero at the cutoff distance, improving energy conservation
 double compute_v_shift(void)
 {
@@ -154,17 +201,6 @@ double compute_v_shift(void)
 }
 
 __device__ double v_shift;
-__device__ double atomicAddPreSM60(double* address, double val)
-{
-    unsigned long long int* address_as_ull = (unsigned long long int*)address;
-    unsigned long long int old = *address_as_ull, assumed;
-    do {
-        assumed = old;
-        old = atomicCAS(address_as_ull, assumed,
-                __double_as_longlong(val + __longlong_as_double(assumed)));
-    } while (assumed != old);
-    return __longlong_as_double(old);
-}
 __global__ void compute_forces_internal(Particle *particles, unsigned int n, double box_size, double *pe_out)
 {
     extern __shared__ double shared[];
@@ -186,6 +222,9 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
     for (int tile = 0; tile < n; tile += blockDim.x)
     {
         int shared_j = tile + threadIdx.x;
+
+        sh_x[threadIdx.x] = 0.0;
+        sh_y[threadIdx.x] = 0.0;
 
         // load tile into shared memory
         if (shared_j < n)
@@ -235,88 +274,78 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
     pi->fx = fxi;
     pi->fy = fyi;
 
-    atomicAddPreSM60(pe_out, pe); // replace with atomicAdd if compute capability > 6.0
+    atomicAdd(pe_out, pe); // replace with atomicAdd if compute capability > 6.0
 }
 
-double compute_forces(Particle *particles, unsigned int n, double box_size)
+double compute_forces(Particle *d_particles, unsigned int n, double box_size)
 {
-    int threads = 256;
-    int blocks = (n + threads - 1) / threads;
-    size_t shared_mem_size = 2 * threads * sizeof(double);
+    int blocks = (n + THREADS - 1) / THREADS;
+    size_t shared_mem_size = 2 * THREADS * sizeof(double);
 
-    // Device pointers
-    Particle *d_particles;
+    // Initialize potential energy on device to 0
     double *d_pe;
-
-    // Allocate GPU memory
-    cudaMalloc((void**)&d_particles, n * sizeof(Particle));
     cudaMalloc((void**)&d_pe, sizeof(double));
-
-    // Copy particles to GPU
-    cudaMemcpy(d_particles, particles, n * sizeof(Particle), cudaMemcpyHostToDevice);
-
-    // Initialize potential energy on device
-    double pe = 0.0;
-    cudaMemcpy(d_pe, &pe, sizeof(double), cudaMemcpyHostToDevice);
-
-    // Copy constant
-    double cpu_v_shift = compute_v_shift();
-    cudaMemcpyToSymbol(v_shift, &cpu_v_shift, sizeof(double));
+    cudaMemset(d_pe, 0, sizeof(double));
 
     // Launch kernel
-    compute_forces_internal<<<blocks, threads, shared_mem_size>>>(
+    compute_forces_internal<<<blocks, THREADS, shared_mem_size>>>(
         d_particles, n, box_size, d_pe
     );
 
     cudaDeviceSynchronize();
 
     // Copy result back
+    double pe;
     cudaMemcpy(&pe, d_pe, sizeof(double), cudaMemcpyDeviceToHost);
-
-    // Copy particles back if kernel modifies them
-    cudaMemcpy(particles, d_particles, n * sizeof(Particle), cudaMemcpyDeviceToHost);
-
-    // Free GPU memory
-    cudaFree(d_particles);
     cudaFree(d_pe);
-
     return pe;
 }
 
-double leapfrog_step(Particle *particles, unsigned int n, double box_size)
+__global__ void half_leapfrog(Particle *d_particles, unsigned int n, int do_drift)
 {
-    // update velocities by half a time step, then update positions by a full time step,
-    // and finally update velocities by another half time step to complete the leapfrog integration step
-    for (unsigned int i = 0; i < n; ++i)
-    {
-        Particle *p = &particles[i];
-        p->vx += 0.5 * DT * p->fx;
-        p->vy += 0.5 * DT * p->fy;
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
 
+    Particle *p = &d_particles[i];
+
+    p->vx += 0.5 * DT * p->fx;
+    p->vy += 0.5 * DT * p->fy;
+
+    if (do_drift)
+    {
         p->x += DT * p->vx;
         p->y += DT * p->vy;
     }
+}
 
-    wrap_positions(particles, n, box_size);
-
-    double pe = compute_forces(particles, n, box_size);
-
-    for (unsigned int i = 0; i < n; ++i)
-    {
-        Particle *p = &particles[i];
-        p->vx += 0.5 * DT * p->fx;
-        p->vy += 0.5 * DT * p->fy;
-    }
+double leapfrog_step(Particle *d_particles, unsigned int n, double box_size)
+{   
+    int blocks = (n + THREADS - 1) / THREADS;
+    
+    // update velocities by half a time step, then update positions by a full time step,
+    // and finally update velocities by another half time step to complete the leapfrog integration step
+    half_leapfrog<<<blocks, THREADS>>>(d_particles, n, 1);
+    wrap_positions_kernel<<<blocks, THREADS>>>(d_particles, n, box_size);
+    double pe = compute_forces(d_particles, n, box_size);
+    half_leapfrog<<<blocks, THREADS>>>(d_particles, n, 0);
 
     return pe;
 }
 
 SimulationResult run_simulation(Particle *particles, unsigned int n, unsigned int nsteps, double box_size, int log_steps)
 {
+    // Move particles to device
+    Particle *d_particles;
+    cudaMalloc((void**)&d_particles, n * sizeof(Particle));
+    cudaMemcpy(d_particles, particles, n * sizeof(Particle), cudaMemcpyHostToDevice);
+
+    // Initialize v_shift on device
+    double cpu_v_shift = compute_v_shift();
+    cudaMemcpyToSymbol(v_shift, &cpu_v_shift, sizeof(double));
 
     SimulationResult out;
-    out.start_potential = compute_forces(particles, n, box_size);
-    out.start_kinetic = compute_ke(particles, n);
+    out.start_potential = compute_forces(d_particles, n, box_size);
+    out.start_kinetic = compute_ke(d_particles, n);
     out.start_total = out.start_kinetic + out.start_potential;
 
 #if GENERATE_GIF
@@ -329,6 +358,7 @@ SimulationResult run_simulation(Particle *particles, unsigned int n, unsigned in
     }
     else
     {
+        cudaMemcpy(particles, d_particles, n * sizeof(Particle), cudaMemcpyDeviceToHost);
         render_frame_gif(gif, particles, n, box_size);
         ge_add_frame(gif, FRAME_DELAY);
     }
@@ -336,8 +366,8 @@ SimulationResult run_simulation(Particle *particles, unsigned int n, unsigned in
 
     for (unsigned int step = 0; step < nsteps; step++)
     {
-        out.final_potential = leapfrog_step(particles, n, box_size);
-        out.final_kinetic = compute_ke(particles, n);
+        out.final_potential = leapfrog_step(d_particles, n, box_size);
+        out.final_kinetic = compute_ke(d_particles, n);
         out.final_total = out.final_kinetic + out.final_potential;
         if (log_steps)
         {
@@ -352,6 +382,7 @@ SimulationResult run_simulation(Particle *particles, unsigned int n, unsigned in
 #if GENERATE_GIF
         if (gif && FRAME_EVERY > 0 && (step + 1) % FRAME_EVERY == 0)
         {
+            cudaMemcpy(particles, d_particles, n * sizeof(Particle), cudaMemcpyDeviceToHost);
             render_frame_gif(gif, particles, n, box_size);
             ge_add_frame(gif, FRAME_DELAY);
         }
@@ -365,6 +396,7 @@ SimulationResult run_simulation(Particle *particles, unsigned int n, unsigned in
     }
 #endif
 
+    cudaMemcpy(particles, d_particles, n * sizeof(Particle), cudaMemcpyDeviceToHost);
     out.n = n;
     out.particles = particles;
     return out;
