@@ -3,7 +3,7 @@ CC = nvcc
 
 # Compiler flags
 LDLIBS = -lm
-CFLAGS = -Wno-deprecated-gpu-targets -gencode=arch=compute_70,code=sm_70 -O3 -Xcompiler --openmp,-Wall -DTHREADS=${THREADS} -DPARAMETER_N_STEPS=${N_STEPS} -DPARAMETER_N=${N}
+CFLAGS = -Wno-deprecated-gpu-targets -gencode=arch=compute_70,code=sm_70 -O3 -Xcompiler --openmp,-Wall -DPARAMETER_THREADS=${PARAMETER_THREADS} -DPARAMETER_N_STEPS=${PARAMETER_N_STEPS} -DPARAMETER_N=${PARAMETER_N}
 
 SRC=src
 
