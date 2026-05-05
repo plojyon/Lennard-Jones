@@ -207,8 +207,9 @@ __device__ double v_shift;
 __global__ void compute_forces_internal(Particle *particles, unsigned int n, double box_size, double *pe_out)
 {
     extern __shared__ double shared[];
-    double *sh_x = shared;
-    double *sh_y = shared + blockDim.x;
+    double *reduce = shared;
+    double *sh_x = shared + blockDim.x;
+    double *sh_y = shared + blockDim.x * 2;
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n)
         return;
@@ -221,8 +222,6 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
 
     for (int tile = 0; tile < n; tile += blockDim.x)
     {
-        __syncthreads();
-
         int shared_j = tile + threadIdx.x;
 
         sh_x[threadIdx.x] = 0.0;
@@ -271,13 +270,15 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
             double vij = 4.0 * EPSILON * (pow(sr, 12.0) - pow(sr, 6.0)) - v_shift;
             pe += 0.5 * vij;
         }
+
+        __syncthreads();
     }
 
     pi->fx = fxi;
     pi->fy = fyi;
 
     // Reduce per block
-    shared[threadIdx.x] = pe;
+    reduce[threadIdx.x] = pe;
 
     __syncthreads();
 
@@ -285,20 +286,20 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
     {
         if (threadIdx.x < idxStep)
         {
-            shared[threadIdx.x] += shared[threadIdx.x + idxStep];
+            reduce[threadIdx.x] += reduce[threadIdx.x + idxStep];
         }
         __syncthreads();
     }
 
     if(threadIdx.x == 0) {
-        atomicAdd(pe_out, shared[0]); // replace with atomicAdd if compute capability > 6.0
+        atomicAdd(pe_out, reduce[0]); // replace with atomicAdd if compute capability > 6.0
     }
 }
 
 double compute_forces(Particle *d_particles, unsigned int n, double box_size, int threads)
 {
     int blocks = (n + threads - 1) / threads;
-    size_t shared_mem_size = 2 * threads * sizeof(double);
+    size_t shared_mem_size = 3 * threads * sizeof(double);
 
     // Initialize potential energy on device to 0
     double *d_pe;
@@ -343,9 +344,12 @@ double leapfrog_step(Particle *d_particles, unsigned int n, double box_size, int
     // update velocities by half a time step, then update positions by a full time step,
     // and finally update velocities by another half time step to complete the leapfrog integration step
     half_leapfrog<<<blocks, threads>>>(d_particles, n, 1);
+    cudaDeviceSynchronize();
     wrap_positions_kernel<<<blocks, threads>>>(d_particles, n, box_size);
+    cudaDeviceSynchronize();
     double pe = compute_forces(d_particles, n, box_size, threads);
     half_leapfrog<<<blocks, threads>>>(d_particles, n, 0);
+    cudaDeviceSynchronize();
 
     return pe;
 }
