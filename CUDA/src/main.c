@@ -6,13 +6,14 @@
 #include "lennard-jones.h"
 
 void print_help(const char *exe) {
-    printf("Usage: %s [N] [nsteps]\n", exe);
+    printf("Usage: %s [N] [nsteps] [threads]\n", exe);
 }
 
 int main(int argc, char **argv) {
     // default parameters
-    unsigned int nsteps = PARAMETER_N_STEPS;
-    unsigned int n = PARAMETER_N;
+    unsigned int nsteps = -1;
+    unsigned int n = -1;
+    unsigned int threads = -1;
     double density = 0.95;
     double temperature = 0.5;
     unsigned int seed = 42;
@@ -28,6 +29,9 @@ int main(int argc, char **argv) {
         nsteps = (unsigned int)strtoul(argv[2], NULL, 10);
     }
     if (argc > 3) {
+        threads = (unsigned int)strtoul(argv[3], NULL, 10);
+    }
+    if (argc > 4) {
         print_help(argv[0]);
         return 1;
     }
@@ -59,7 +63,7 @@ int main(int argc, char **argv) {
 
     //run simulation and measure time
     double start = omp_get_wtime();
-    result = run_simulation(particles, n, nsteps, box_size, 1);
+    result = run_simulation(particles, n, nsteps, box_size, 1, threads);
     double stop = omp_get_wtime();
     printf("\nFinished simulation.\n");
     printf("Final KE: %10.4f | delta: %+.4f\n", result.final_kinetic, result.final_kinetic - result.start_kinetic);
