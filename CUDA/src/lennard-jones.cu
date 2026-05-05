@@ -97,8 +97,7 @@ __global__ void compute_ke_kernel(const Particle *d_particles, unsigned int n, d
     }
 
     // The last thread has to add the result to result (this is a block result in a grid of blocks)
-    if (threadIdx.x == 0)
-    {
+    if(threadIdx.x == 0) {
         atomicAdd(result, part[0]);
     }
 }
@@ -220,14 +219,9 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
     Particle *pi = &particles[i];
     double pe = 0.0;
 
-    pi->fx = 0.0;
-    pi->fy = 0.0;
-
     for (int tile = 0; tile < n; tile += blockDim.x)
     {
-        // We care about the details
-        if (tile != 0)
-            __syncthreads();
+        __syncthreads();
 
         int shared_j = tile + threadIdx.x;
 
@@ -260,21 +254,21 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
             dy -= box_size * nearbyint(dy / box_size);
 
             // compute Lennard-Jones force and potential energy contribution if particles are within the cutoff distance
-            double r = dx * dx + dy * dy;
-            if (r >= R_CUT * R_CUT || r == 0.0)
+            double r = sqrt(dx * dx + dy * dy);
+            if (r >= R_CUT || r == 0.0)
             {
                 continue;
             }
-            double sr = SIGMA * SIGMA / r;
+            double sr = SIGMA / r;
 
-            double fij = 24.0 * EPSILON * (2.0 * pow(sr, 6.0) - pow(sr, 3.0)) / r;
-            double fx = fij * dx;
-            double fy = fij * dy;
+            double fij = 24.0 * EPSILON * (2.0 * pow(sr, 12.0) - pow(sr, 6.0)) / r;
+            double fx = fij * dx / r;
+            double fy = fij * dy / r;
 
             fxi += fx;
             fyi += fy;
 
-            double vij = 4.0 * EPSILON * (pow(sr, 6.0) - pow(sr, 3.0)) - v_shift;
+            double vij = 4.0 * EPSILON * (pow(sr, 12.0) - pow(sr, 6.0)) - v_shift;
             pe += 0.5 * vij;
         }
     }
@@ -296,9 +290,8 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
         __syncthreads();
     }
 
-    if (threadIdx.x == 0)
-    {
-        atomicAdd(pe_out, pe); // replace with atomicAdd if compute capability > 6.0
+    if(threadIdx.x == 0) {
+        atomicAdd(pe_out, shared[0]); // replace with atomicAdd if compute capability > 6.0
     }
 }
 
