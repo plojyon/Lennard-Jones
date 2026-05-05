@@ -112,7 +112,7 @@ double compute_ke(const Particle *d_particles, unsigned int n, int threads)
     cudaMemset(d_ke, 0, sizeof(double));
 
     int blocks = (n + threads - 1) / threads;
-    compute_ke_kernel<<<blocks, threads, threads>>>(d_particles, n, d_ke);
+    compute_ke_kernel<<<blocks, threads, threads*sizeof(double)>>>(d_particles, n, d_ke);
     cudaDeviceSynchronize();
     cudaMemcpy(&ke, d_ke, sizeof(double), cudaMemcpyDeviceToHost);
 
