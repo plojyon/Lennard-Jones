@@ -113,6 +113,7 @@ double compute_ke(const Particle *d_particles, unsigned int n, int threads)
 
     int blocks = (n + threads - 1) / threads;
     compute_ke_kernel<<<blocks, threads, threads>>>(d_particles, n, d_ke);
+    cudaDeviceSynchronize();
     cudaMemcpy(&ke, d_ke, sizeof(double), cudaMemcpyDeviceToHost);
 
     cudaFree(d_ke);
@@ -382,6 +383,7 @@ SimulationResult run_simulation(Particle *particles, unsigned int n, unsigned in
     }
     else
     {
+        cudaDeviceSynchronize();
         cudaMemcpy(particles, d_particles, n * sizeof(Particle), cudaMemcpyDeviceToHost);
         render_frame_gif(gif, particles, n, box_size);
         ge_add_frame(gif, FRAME_DELAY);
@@ -406,6 +408,7 @@ SimulationResult run_simulation(Particle *particles, unsigned int n, unsigned in
 #if GENERATE_GIF
         if (gif && FRAME_EVERY > 0 && (step + 1) % FRAME_EVERY == 0)
         {
+            cudaDeviceSynchronize();
             cudaMemcpy(particles, d_particles, n * sizeof(Particle), cudaMemcpyDeviceToHost);
             render_frame_gif(gif, particles, n, box_size);
             ge_add_frame(gif, FRAME_DELAY);
@@ -420,6 +423,7 @@ SimulationResult run_simulation(Particle *particles, unsigned int n, unsigned in
     }
 #endif
 
+    cudaDeviceSynchronize();
     cudaMemcpy(particles, d_particles, n * sizeof(Particle), cudaMemcpyDeviceToHost);
     out.n = n;
     out.particles = particles;
