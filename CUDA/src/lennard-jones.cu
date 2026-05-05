@@ -207,9 +207,8 @@ __device__ double v_shift;
 __global__ void compute_forces_internal(Particle *particles, unsigned int n, double box_size, double *pe_out)
 {
     extern __shared__ double shared[];
-    double *reduce = shared;
-    double *sh_x = shared + blockDim.x;
-    double *sh_y = shared + blockDim.x * 2;
+    double *sh_x = shared;
+    double *sh_y = shared + blockDim.x;
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     bool active = i < n;
 
@@ -291,7 +290,7 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
     }
 
     // Reduce per block
-    reduce[threadIdx.x] = pe;
+    shared[threadIdx.x] = pe;
 
     __syncthreads();
 
@@ -299,20 +298,20 @@ __global__ void compute_forces_internal(Particle *particles, unsigned int n, dou
     {
         if (threadIdx.x < idxStep)
         {
-            reduce[threadIdx.x] += reduce[threadIdx.x + idxStep];
+            shared[threadIdx.x] += shared[threadIdx.x + idxStep];
         }
         __syncthreads();
     }
 
     if(threadIdx.x == 0) {
-        atomicAdd(pe_out, reduce[0]); // replace with atomicAdd if compute capability > 6.0
+        atomicAdd(pe_out, shared[0]); // replace with atomicAddPreSM60 if compute capability > 6.0
     }
 }
 
 double compute_forces(Particle *d_particles, unsigned int n, double box_size, int threads)
 {
     int blocks = (n + threads - 1) / threads;
-    size_t shared_mem_size = 3 * threads * sizeof(double);
+    size_t shared_mem_size = 2 * threads * sizeof(double);
 
     // Initialize potential energy on device to 0
     double *d_pe;
